@@ -12,7 +12,7 @@ use hyper::{
     header::{ ContentLength, ContentType },
     server::{ Request, Response, Service },
     Chunk,
-    Method,
+    Method::{ self, Get },
     StatusCode,
 };
 use futures::{ future::{ Future, FutureResult }, Stream };
@@ -37,6 +37,21 @@ impl Service for MicroService {
                     .then(make_post_response);
                 Box::new(future)
             }
+            (&Get, "/") => {
+                let time_range = match req.query() {
+                    Some(query) => parse_query(query),
+                    None =>
+                        Ok(TimeRange {
+                            before: None,
+                            after: None,
+                        }),
+                };
+                let response = match time_range {
+                    Ok(time_range) => make_get_response(query_db(time_range)),
+                    Err(error) => make_error_response(&error.to_string(), StatusCode::NotFound),
+                };
+                Box::new(response)
+            }
             _ => Box::new(futures::future::ok(Response::new().with_status(StatusCode::NotFound))),
         }
     }
@@ -45,6 +60,11 @@ impl Service for MicroService {
 struct NewMessage {
     username: String,
     message: String,
+}
+
+struct TimeRange {
+    before: Option<i64>,
+    after: Option<i64>,
 }
 
 fn main() {
@@ -101,6 +121,23 @@ fn make_post_response(
     }
 }
 
+fn make_get_response(
+    messages: Option<Vec<NewMessage>>
+) -> FutureResult<hyper::Response, hyper::Error> {
+    let response = match messages {
+        Some(messages) => {
+            let body = render_page(messages);
+            Response::new()
+                .with_header(ContentLength(body.len() as u64))
+                .with_body(body)
+        }
+        None => Response::new().with_status(StatusCode::InternalServerError),
+    };
+
+    debug!("{:?}", response);
+    futures::future::ok(response)
+}
+
 fn make_error_response(
     error_message: &str,
     status_code: StatusCode
@@ -113,4 +150,35 @@ fn make_error_response(
         .with_header(ContentType::json())
         .with_body(payload);
     futures::future::ok(response)
+}
+
+fn parse_query(query: &str) -> Result<TimeRange, String> {
+    let args = url::form_urlencoded
+        ::parse(&query.as_bytes())
+        .into_owned()
+        .collect::<HashMap<String, String>>();
+
+    let before = args.get("before").map(|value| value.parse::<i64>());
+    if let Some(ref result) = before {
+        if let Err(ref error) = *result {
+            return Err(format!("Error parsing `before` value: {}", error));
+        }
+    }
+
+    let after = args.get("after").map(|value| value.parse::<i64>());
+    if let Some(ref result) = after {
+        if let Err(ref error) = *result {
+            return Err(format!("Error parsing `after` value: {}", error));
+        }
+    }
+
+    Ok(TimeRange { before: before.map(|b| b.unwrap()), after: after.map(|a| a.unwrap()) })
+}
+
+fn render_page(messages: Vec<NewMessage>) -> String {
+    String::from("hello world")
+}
+
+fn query_db(time_range: TimeRange) -> Option<Vec<NewMessage>> {
+    Some(vec![])
 }
