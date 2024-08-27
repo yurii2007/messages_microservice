@@ -6,8 +6,8 @@ extern crate log;
 extern crate env_logger;
 extern crate serde_json;
 
-use std::{ collections::HashMap, io };
-
+use std::env;
+use std::{ collections::HashMap, error::Error, io };
 use hyper::{
     header::{ ContentLength, ContentType },
     server::{ Request, Response, Service },
@@ -16,6 +16,17 @@ use hyper::{
     StatusCode,
 };
 use futures::{ future::{ Future, FutureResult }, Stream };
+use diesel::prelude::*;
+use diesel::pg::PgConnection;
+
+#[macro_use]
+extern crate serde_derive;
+#[macro_use]
+extern crate diesel;
+mod model;
+mod schemas;
+
+const DEFAULT_DATABASE_URL: &'static str = "postgresql://postgres@localhost:5432";
 
 struct MicroService;
 
@@ -26,6 +37,17 @@ impl Service for MicroService {
     type Future = Box<dyn Future<Item = Self::Response, Error = Self::Error>>;
 
     fn call(&self, req: Request) -> Self::Future {
+        let db_connection = match connect_to_db() {
+            Some(connection) => connection,
+            None => {
+                return Box::new(
+                    futures::future::ok(
+                        Response::new().with_status(StatusCode::InternalServerError)
+                    )
+                );
+            }
+        };
+
         info!("Microservice received a request {:?}", req);
         match (&req.method(), req.path()) {
             (&Method::Post, "/") => {
@@ -33,7 +55,7 @@ impl Service for MicroService {
                     .body()
                     .concat2()
                     .and_then(parse_form)
-                    .and_then(write_to_db)
+                    .and_then(move |new_message| write_to_db(new_message, &db_connection))
                     .then(make_post_response);
                 Box::new(future)
             }
@@ -47,7 +69,7 @@ impl Service for MicroService {
                         }),
                 };
                 let response = match time_range {
-                    Ok(time_range) => make_get_response(query_db(time_range)),
+                    Ok(time_range) => make_get_response(query_db(time_range, &db_connection)),
                     Err(error) => make_error_response(&error.to_string(), StatusCode::NotFound),
                 };
                 Box::new(response)
@@ -100,8 +122,26 @@ fn parse_form(form_chunk: Chunk) -> FutureResult<NewMessage, hyper::Error> {
     }
 }
 
-fn write_to_db(entry: NewMessage) -> FutureResult<i64, hyper::Error> {
-    futures::future::ok(0)
+fn write_to_db(
+    new_message: NewMessage,
+    db_connection: &PgConnection
+) -> FutureResult<i64, hyper::Error> {
+    use schemas::message;
+    let timestamp = diesel
+        ::insert_into(message::table)
+        .values(&new_message)
+        .returning(messages::timestamp)
+        .get_result(db_connection);
+
+    match timestamp {
+        Ok(timestamp) => futures::future::ok(timestamp),
+        Err(error) => {
+            error!("Error writing to the database, {}", error.description());
+            futures::future::err(
+                hyper::Error::from(io::Error::new(io::ErrorKind::Other, "service error"))
+            )
+        }
+    }
 }
 
 fn make_post_response(
@@ -181,4 +221,15 @@ fn render_page(messages: Vec<NewMessage>) -> String {
 
 fn query_db(time_range: TimeRange) -> Option<Vec<NewMessage>> {
     Some(vec![])
+}
+
+fn connect_to_db() -> Option<PgConnection> {
+    let database_url = env::var("DATABASE_URL").unwrap_or(String::from(DEFAULT_DATABASE_URL));
+    match PgConnection::establish(&database_url) {
+        Ok(connection) => Some(connection),
+        Err(error) => {
+            error!("Error connecting to database: {}", error.description());
+            None
+        }
+    }
 }
