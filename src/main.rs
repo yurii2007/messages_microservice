@@ -6,6 +6,7 @@ extern crate log;
 extern crate env_logger;
 extern crate serde_json;
 
+use crate::models::{ Message, NewMessage };
 use std::env;
 use std::{ collections::HashMap, error::Error, io };
 use hyper::{
@@ -19,12 +20,10 @@ use futures::{ future::{ Future, FutureResult }, Stream };
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 
-#[macro_use]
 extern crate serde_derive;
-#[macro_use]
 extern crate diesel;
-mod model;
-mod schemas;
+mod models;
+mod schema;
 
 const DEFAULT_DATABASE_URL: &'static str = "postgresql://postgres@localhost:5432";
 
@@ -37,7 +36,7 @@ impl Service for MicroService {
     type Future = Box<dyn Future<Item = Self::Response, Error = Self::Error>>;
 
     fn call(&self, req: Request) -> Self::Future {
-        let db_connection = match connect_to_db() {
+        let mut db_connection = match connect_to_db() {
             Some(connection) => connection,
             None => {
                 return Box::new(
@@ -55,7 +54,7 @@ impl Service for MicroService {
                     .body()
                     .concat2()
                     .and_then(parse_form)
-                    .and_then(move |new_message| write_to_db(new_message, &db_connection))
+                    .and_then(move |new_message| write_to_db(new_message, &mut db_connection))
                     .then(make_post_response);
                 Box::new(future)
             }
@@ -77,11 +76,6 @@ impl Service for MicroService {
             _ => Box::new(futures::future::ok(Response::new().with_status(StatusCode::NotFound))),
         }
     }
-}
-
-struct NewMessage {
-    username: String,
-    message: String,
 }
 
 struct TimeRange {
@@ -124,17 +118,17 @@ fn parse_form(form_chunk: Chunk) -> FutureResult<NewMessage, hyper::Error> {
 
 fn write_to_db(
     new_message: NewMessage,
-    db_connection: &PgConnection
+    db_connection: &mut PgConnection
 ) -> FutureResult<i64, hyper::Error> {
-    use schemas::message;
-    let timestamp = diesel
-        ::insert_into(message::table)
+    use schema::messages;
+    let message = diesel
+        ::insert_into(messages::table)
         .values(&new_message)
-        .returning(messages::timestamp)
+        .returning(Message::as_returning())
         .get_result(db_connection);
 
-    match timestamp {
-        Ok(timestamp) => futures::future::ok(timestamp),
+    match message {
+        Ok(message) => futures::future::ok(message.timestamp),
         Err(error) => {
             error!("Error writing to the database, {}", error.description());
             futures::future::err(
@@ -219,7 +213,7 @@ fn render_page(messages: Vec<NewMessage>) -> String {
     String::from("hello world")
 }
 
-fn query_db(time_range: TimeRange) -> Option<Vec<NewMessage>> {
+fn query_db(time_range: TimeRange, connection: &PgConnection) -> Option<Vec<NewMessage>> {
     Some(vec![])
 }
 
