@@ -18,5 +18,17 @@ services:
     ports:
       - '1488:80'
 
+  rust_app:
+    build:
+      dockerfile: ./Dockerfile
+    restart: always
+    networks:
+      - network
+    env_file:
+      - ./.env
+
 volumes:
   rust_messages_data:
+
+networks:
+  network:
