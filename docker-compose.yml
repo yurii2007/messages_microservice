@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   postgres:
     image: postgres:latest
@@ -9,6 +8,15 @@ services:
       - '5432:5432'
     volumes:
       - rust_messages_data:/var/lib/postgresql/data
+
+
+  pgadmin_web:
+    image: dpage/pgadmin4
+    container_name: pgadmin_web
+    env_file:
+      - ./.env
+    ports:
+      - '1488:80'
 
 volumes:
   rust_messages_data:
