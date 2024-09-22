@@ -7,6 +7,7 @@ extern crate env_logger;
 extern crate serde_json;
 
 use crate::models::{ Message, NewMessage };
+use maud::html;
 use std::env;
 use std::{ collections::HashMap, error::Error, io };
 use hyper::{
@@ -68,7 +69,7 @@ impl Service for MicroService {
                         }),
                 };
                 let response = match time_range {
-                    Ok(time_range) => make_get_response(query_db(time_range, &db_connection)),
+                    Ok(time_range) => make_get_response(query_db(time_range, &mut db_connection)),
                     Err(error) => make_error_response(&error.to_string(), StatusCode::NotFound),
                 };
                 Box::new(response)
@@ -130,7 +131,7 @@ fn write_to_db(
     match message {
         Ok(message) => futures::future::ok(message.timestamp),
         Err(error) => {
-            error!("Error writing to the database, {}", error.description());
+            error!("Error writing to the database, {}", error.to_string());
             futures::future::err(
                 hyper::Error::from(io::Error::new(io::ErrorKind::Other, "service error"))
             )
@@ -156,7 +157,7 @@ fn make_post_response(
 }
 
 fn make_get_response(
-    messages: Option<Vec<NewMessage>>
+    messages: Option<Vec<Message>>
 ) -> FutureResult<hyper::Response, hyper::Error> {
     let response = match messages {
         Some(messages) => {
@@ -209,12 +210,47 @@ fn parse_query(query: &str) -> Result<TimeRange, String> {
     Ok(TimeRange { before: before.map(|b| b.unwrap()), after: after.map(|a| a.unwrap()) })
 }
 
-fn render_page(messages: Vec<NewMessage>) -> String {
-    String::from("hello world")
+fn render_page(messages: Vec<Message>) -> String {
+    let markup = html! {
+        body {
+            style {
+                "body { width: 100vw; height: 100vh; background-color: #1D1D1D; color: #FFFCFA}"
+            }
+            ul {
+                @for message in &messages {
+                    li {
+                        (message.username) " (" (message.timestamp) "): " (message.message)
+                    }
+                }
+            }
+        }
+    };
+
+    markup.into_string()
 }
 
-fn query_db(time_range: TimeRange, connection: &PgConnection) -> Option<Vec<NewMessage>> {
-    Some(vec![])
+fn query_db(time_range: TimeRange, connection: &mut PgConnection) -> Option<Vec<Message>> {
+    use schema::messages;
+    let TimeRange { before, after } = time_range;
+    let query_result = match (before, after) {
+        (Some(before), Some(after)) => {
+            messages::table
+                ::select(messages::table, messages::all_columns)
+                .get_results::<Message>(connection)
+        }
+        _ =>
+            messages::table
+                ::select(messages::table, messages::all_columns)
+                .get_results::<Message>(connection),
+    };
+
+    match query_result {
+        Ok(result) => Some(result),
+        Err(error) => {
+            error!("Error querying db: {}", error);
+            None
+        }
+    }
 }
 
 fn connect_to_db() -> Option<PgConnection> {
@@ -222,7 +258,7 @@ fn connect_to_db() -> Option<PgConnection> {
     match PgConnection::establish(&database_url) {
         Ok(connection) => Some(connection),
         Err(error) => {
-            error!("Error connecting to database: {}", error.description());
+            error!("Error connecting to database: {}", error.to_string());
             None
         }
     }

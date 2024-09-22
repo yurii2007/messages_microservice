@@ -3,8 +3,7 @@ use diesel::prelude::*;
 use crate::schema::messages;
 
 #[derive(Queryable, Selectable)]
-#[diesel(table_name = messages)]
-#[diesel(check_for_backend(diesel::pg::Pg))]
+#[diesel(table_name = messages, check_for_backend(diesel::pg::Pg))]
 pub struct Message {
     pub id: i32,
     pub username: String,
